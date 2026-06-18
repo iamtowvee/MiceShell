@@ -67,3 +67,15 @@ Distributed under Apache-2.0
 
 * chg . : HELLO_W
 > Ok. [f:/HELLO_W]
+
+* cd ..
+> Ok. [f:]
+
+* rmf HELLO_W
+> Ok. [f:/HELLO_W]
+
+* mice
+> on venus
+
+* exit
+> Exited with Code::0.
