@@ -18,6 +18,11 @@ Distributed under Apache-2.0
   anl               Add new line
   gls               Get file lines
   chg               Change file / folder name
+  dwn               Download file
+  fch               Take response
+  ping              Pinging server
+  ip                PC IP
+  cls               Clear screen
   mice              Nothing... <3
 
 * cd f:
@@ -73,6 +78,21 @@ Distributed under Apache-2.0
 
 * rmf HELLO_W
 > Ok. [f:/HELLO_W]
+
+* ping www.google.com
+> 13ms
+
+* ip
+> 192.0.8.2
+
+* fch https://raw.githubusercontent.com/amfpl/am-docs/refs/heads/main/HELLO.txt : x
+> Ok. Content saved to x.
+
+* outln $x
+> Hi, My beautiful world!
+
+* dwn https://raw.githubusercontent.com/amfpl/am-docs/refs/heads/main/LICENSE.txt : f:/temp/LICENCE.txt
+> Ok. [f:/temp/LICENSE.txt]
 
 * mice
 > on venus
