@@ -1,0 +1,5 @@
+EXAMPLE FILE. NEEDED TO TEST THE NETWORK.
+— Go to 0x0001.txt, and when you've read it all the way to the end, come back here and read this message again. (★_★)
+---
+|-> FILE-CODE: 0x0000
+|-> FILE-NAME: 0x0000.txt
