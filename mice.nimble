@@ -8,6 +8,7 @@ binDir = "bin"
 bin = @["mice"]
 
 requires "nim >= 2.0.0"
+requires "winim"
 
 task build, "Build MiceShell":
   exec "nim c -d:release src/mice.nim"

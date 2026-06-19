@@ -1,13 +1,44 @@
 import os, osproc, strutils, sequtils, times, parseutils, httpclient, terminal
+import unicode as uni
+import winim/lean
 
 const VERSION = "0.1.0"
 const MAX_HISTORY = 100
 
 # ---------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------
 var history: seq[string] = @[]
-var historyIndex = -1
+var currentEncoding = "UTF-8"
+
+proc executeCommand(input: string)
 
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
+proc cmdEnc(args: seq[string]) =
+  if args.len == 0:
+    echo "> Current encoding: ", currentEncoding
+    return
+  
+  let codePage = args[0]
+  
+  let validPages = ["65001", "1251", "866", "437"]
+  if codePage notin validPages:
+    echo "> Error: unknown code page. Use: 65001, 1251, 866, 437"
+    return
+  
+  try:
+    let (output, exitCode) = execCmdEx("cmd /c chcp " & codePage)
+    
+    if exitCode == 0:
+      case codePage
+      of "65001": currentEncoding = "UTF-8"
+      of "1251": currentEncoding = "Windows-1251"
+      of "866": currentEncoding = "DOS-866"
+      of "437": currentEncoding = "US-ASCII"
+      echo "> Ok. ", currentEncoding, " used."
+    else:
+      echo "> Error: could not change code page (exit code: ", exitCode, ")"
+  except:
+    echo "> Error: ", getCurrentExceptionMsg()
+
 proc getFileSizeStr(path: string): string =
   try:
     let size = getFileSize(path)
@@ -36,6 +67,7 @@ proc getRights(path: string): string =
 proc formatDate(time: Time): string =
   return time.format("yyyy-MM-dd HH:mm:ss")
 
+# ---------- ФУНКЦИИ ИСТОРИИ ----------
 proc addHistory(cmd: string) =
   if cmd.strip().len == 0: return
   if history.len > 0 and history[^1] == cmd:
@@ -46,7 +78,6 @@ proc addHistory(cmd: string) =
 
 proc clearHistory() =
   history.setLen(0)
-  historyIndex = -1
 
 proc showHistory() =
   if history.len == 0:
@@ -54,70 +85,6 @@ proc showHistory() =
     return
   for i, cmd in history:
     echo "> ", i+1, "  ", cmd
-
-# ---------- ВВОД С ИСТОРИЕЙ ----------
-proc readLineWithHistory(): string =
-  var input = ""
-  var pos = 0
-  
-  while true:
-    # Позиционируем курсор
-    let promptLen = 2  # "* "
-    stdout.write("\r* ")
-    stdout.write(input)
-    stdout.write(" " * 10)  # очищаем лишнее
-    stdout.flushFile()
-    
-    # Перемещаем курсор на позицию ввода
-    stdout.write("\r* ")
-    for i in 0..<pos:
-      stdout.write(input[i])
-    stdout.flushFile()
-    
-    let key = stdin.getch()
-    
-    if key == '\r' or key == '\n':  # Enter
-      echo ""
-      return input
-    
-    elif key == '\x7f' or key == '\x08':  # Backspace
-      if pos > 0:
-        input.delete(pos-1, pos-1)
-        pos -= 1
-    
-    elif key == '\x1b':  # Escape sequence
-      let next = stdin.getch()
-      if next == '[':
-        let arrow = stdin.getch()
-        case arrow
-        of 'A':  # Up arrow
-          if history.len > 0 and historyIndex < history.len - 1:
-            historyIndex += 1
-            input = history[^ (historyIndex + 1)]
-            pos = input.len
-        of 'B':  # Down arrow
-          if historyIndex > -1:
-            historyIndex -= 1
-            if historyIndex >= 0:
-              input = history[^ (historyIndex + 1)]
-              pos = input.len
-            else:
-              input = ""
-              pos = 0
-        of 'C':  # Right arrow
-          if pos < input.len:
-            pos += 1
-        of 'D':  # Left arrow
-          if pos > 0:
-            pos -= 1
-        else:
-          discard
-    
-    elif key.isPrintable:
-      input.insert($key, pos)
-      pos += 1
-    else:
-      discard
 
 # cls - очистка экрана
 proc cmdCls() =
@@ -131,18 +98,15 @@ proc cmdPing(args: seq[string]) =
     return
   try:
     let host = args[0]
-    # Запускаем ping и парсим вывод
     let output = execProcess("ping -n 1 " & host)
     let lines = output.splitLines()
     for line in lines:
-      # Ищем время в ответе
       if "time=" in line:
         let parts = line.split("time=")
         if parts.len > 1:
           let timeStr = parts[1].split("ms")[0].strip()
           echo "> ", timeStr, "ms"
           return
-      # Альтернативный формат (если нет time=)
       if "time<" in line:
         echo "> <1ms"
         return
@@ -156,7 +120,6 @@ proc cmdIp() =
     let output = execProcess("ipconfig")
     let lines = output.splitLines()
     for line in lines:
-      # Ищем IPv4 адрес
       if "IPv4" in line or "IPv4-адрес" in line:
         let parts = line.split(":")
         if parts.len > 1:
@@ -257,9 +220,12 @@ proc cmdHelp() =
   echo "  fch               Take response"
   echo "  ping              Pinging server"
   echo "  ip                PC IP"
+  echo "  enc               Change encoding (65001, 1251, 866, 437)"
   echo "  cls               Clear screen"
   echo "  history           Show command history"
-  echo "  clear-history     Clear command history"
+  echo "  ch                Clear command history"
+  echo "  load              Execute script file (.mc)"
+  echo "  takes             Conditional execution"
   echo "  mice              Nothing... <3"
 
 proc cmdExit() =
@@ -372,7 +338,7 @@ proc cmdEfl(args: seq[string]) =
     echo "> Error: use 'filename lineNum : text' format"
     return
   
-  let fileParts = parts[0].splitWhitespace()
+  let fileParts = strutils.splitWhitespace(parts[0])
   if fileParts.len < 2:
     echo "> Error: specify filename and line number"
     return
@@ -420,12 +386,11 @@ proc cmdChg(args: seq[string]) =
 proc cmdFl(args: seq[string]) =
   let path = if args.len > 0: args[0] else: "."
   try:
-    # Собираем данные
     var rows: seq[seq[string]] = @[]
-    var maxNameLen = 4  # "FILE"
-    var maxSizeLen = 4  # "SIZE"
-    var maxRightsLen = 6 # "RIGHTS"
-    var maxDateLen = 19  # "DATE (yyyy-mm-dd HH:mm:ss)"
+    var maxNameLen = 4
+    var maxSizeLen = 4
+    var maxRightsLen = 6
+    var maxDateLen = 19
     
     for kind, path2 in walkDir(path):
       let name = extractFilename(path2)
@@ -435,18 +400,16 @@ proc cmdFl(args: seq[string]) =
       
       rows.add(@[name, size, rights, date])
       
-      maxNameLen = max(maxNameLen, name.len)
-      maxSizeLen = max(maxSizeLen, size.len)
-      maxRightsLen = max(maxRightsLen, rights.len)
-      maxDateLen = max(maxDateLen, date.len)
+      maxNameLen = max(maxNameLen, uni.runeLen(name))
+      maxSizeLen = max(maxSizeLen, uni.runeLen(size))
+      maxRightsLen = max(maxRightsLen, uni.runeLen(rights))
+      maxDateLen = max(maxDateLen, uni.runeLen(date))
     
-    # Рисуем таблицу
     let sepLine = "+" & "-".repeat(maxNameLen + 2) & "+" &
                   "-".repeat(maxSizeLen + 2) & "+" &
                   "-".repeat(maxRightsLen + 2) & "+" &
                   "-".repeat(maxDateLen + 2) & "+"
     
-    # Заголовок (только здесь >)
     echo "> ", sepLine
     echo "> | ", "FILE".alignLeft(maxNameLen), " | ",
                 "SIZE".alignLeft(maxSizeLen), " | ",
@@ -454,7 +417,6 @@ proc cmdFl(args: seq[string]) =
                 "DATE".alignLeft(maxDateLen), " |"
     echo "> ", sepLine
     
-    # Данные (без >)
     for row in rows:
       echo "  | ", row[0].alignLeft(maxNameLen), " | ",
                   row[1].alignLeft(maxSizeLen), " | ",
@@ -489,11 +451,168 @@ proc cmdFt(args: seq[string]) =
 proc cmdMice() =
   echo "> on venus"
 
+proc cmdTechno() =
+  echo "> Technoblade never dies... 🥀"
+
+proc cmdNotch() =
+  echo "                                               /|"
+  echo "> No, I can't throw an apple in the console.../ |  <-- This is a fishing rod 😅"
+  echo "                                                |"
+  echo "                                                |"
+  echo "                                                |"
+  echo "                                               .?"
+  echo "                                               🍎"
+
+proc isKeyPressed(virtualKey: int): bool =
+  return (GetAsyncKeyState(int32(virtualKey)) and 0x8000) != 0
+
+proc cmdLoad(args: seq[string]) =
+  if args.len == 0:
+    echo "> Error: specify script file"
+    return
+  
+  let scriptFile = args[0]
+  
+  if not fileExists(scriptFile):
+    echo "> Error: script file not found: ", scriptFile
+    return
+  
+  try:
+    let content = readFile(scriptFile)
+    let lines = content.splitLines()
+    
+    for line in lines:
+      let trimmed = line.strip()
+      if trimmed.len == 0: continue
+      if trimmed.startsWith("~"): continue
+      
+      let isSilent = trimmed.startsWith("#")
+      let cmd = trimmed.strip(chars = {'^', '#'})
+      
+      if not isSilent:
+        echo "> [script] ", cmd
+      
+      executeCommand(cmd)
+      
+  except:
+    echo "> Error: ", getCurrentExceptionMsg()
+
+proc cmdTakes(args: seq[string]) =
+  if args.len < 2:
+    echo "> Error: invalid takes syntax"
+    return
+  
+  let cmdLine = args.join(" ")
+  
+  let questionPos = cmdLine.find(" ? ")
+  if questionPos == -1:
+    echo "> Error: use 'condition ? true_command : false_command'"
+    return
+  
+  let conditionPart = cmdLine[0..<questionPos].strip()
+  let commandsPart = cmdLine[questionPos+3..^1].strip()
+  
+  let cleanCondition = conditionPart.strip().strip(chars = {'(', ')'})
+  let conditions = cleanCondition.split(" and ")
+  
+  var keysToPress: seq[int] = @[]
+  var keyNames: seq[string] = @[]
+  
+  for cond in conditions:
+    let condStr = cond.strip()
+    if condStr.startsWith("press."):
+      let keyName = condStr[6..^1].toUpperAscii()
+      keyNames.add(keyName)
+      
+      let vk = case keyName
+        of "Y": 0x59
+        of "L_SHIFT": 0xA0
+        of "R_SHIFT": 0xA1
+        of "CTRL", "L_CTRL": 0xA2
+        of "R_CTRL": 0xA3
+        of "ALT", "L_ALT": 0xA4
+        of "R_ALT": 0xA5
+        of "A": 0x41
+        of "B": 0x42
+        of "C": 0x43
+        of "D": 0x44
+        of "E": 0x45
+        of "F": 0x46
+        of "G": 0x47
+        of "H": 0x48
+        of "I": 0x49
+        of "J": 0x4A
+        of "K": 0x4B
+        of "L": 0x4C
+        of "M": 0x4D
+        of "N": 0x4E
+        of "O": 0x4F
+        of "P": 0x50
+        of "Q": 0x51
+        of "R": 0x52
+        of "S": 0x53
+        of "T": 0x54
+        of "U": 0x55
+        of "V": 0x56
+        of "W": 0x57
+        of "X": 0x58
+        of "Z": 0x5A
+        else: 0
+      
+      if vk != 0:
+        keysToPress.add(vk)
+      else:
+        echo "> Error: unknown key: ", keyName
+        return
+    else:
+      echo "> Error: unknown condition: ", condStr
+      return
+  
+  if keysToPress.len == 0:
+    echo "> Error: no valid keys to press"
+    return
+  
+  echo "> Press ", keyNames.join(" + "), " simultaneously..."
+  
+  var allPressed = false
+  var attempts = 0
+  
+  while attempts < 1000:
+    var pressed = 0
+    for vk in keysToPress:
+      if isKeyPressed(vk):
+        pressed += 1
+    
+    if pressed == keysToPress.len:
+      allPressed = true
+      break
+    
+    attempts += 1
+    sleep(10)
+  
+  let colonPos = commandsPart.find(" : ")
+  if colonPos == -1:
+    echo "> Error: missing true/false commands"
+    return
+  
+  let trueCmdPart = commandsPart[0..<colonPos].strip()
+  let falseCmdPart = commandsPart[colonPos+3..^1].strip()
+  
+  let trueCmd = trueCmdPart.strip(chars = {'(', ')'})
+  let falseCmd = falseCmdPart.strip()
+  
+  if allPressed:
+    echo "> [condition true]"
+    executeCommand(trueCmd)
+  else:
+    echo "> [condition false]"
+    executeCommand(falseCmd)
+
 # ---------- ВЫПОЛНЕНИЕ КОМАНД ----------
 proc executeCommand(input: string) =
   let commands = input.split(" & ")
   for cmd in commands:
-    let parts = cmd.strip().splitWhitespace()
+    let parts = strutils.splitWhitespace(cmd.strip())
     if parts.len == 0: continue
     
     let command = parts[0]
@@ -517,13 +636,18 @@ proc executeCommand(input: string) =
     of "tree": cmdTree(args)
     of "ft": cmdFt(args)
     of "mice": cmdMice()
+    of "!:kill::java::user::Notch:.<3.OOPS..#!": cmdNotch()
+    of "@Technoblade...#!NOOOOOOOO!...:(...#;": cmdTechno()
     of "cls": cmdCls()
     of "ping": cmdPing(args)
     of "ip": cmdIp()
+    of "enc": cmdEnc(args)
     of "fch": cmdFch(args)
     of "dwn": cmdDwn(args)
     of "history": showHistory()
     of "ch": clearHistory(); echo "> History cleared"
+    of "load": cmdLoad(args)
+    of "takes": cmdTakes(args)
     else:
       echo "> Unknown command: ", command
 
@@ -532,16 +656,21 @@ when isMainModule:
   echo "MiceShell v", VERSION
   echo "Distributed under Apache-2.0"
   echo ""
-  echo "  ↑↓ - navigate history, Tab - autocomplete (soon)"
+  echo "  Tip: use ↑↓ for history, Tab for completion"
   echo ""
   
   while true:
     stdout.write("* ")
     stdout.flushFile()
     
-    let input = readLineWithHistory()
-    
-    if input.strip().len > 0:
-      addHistory(input)
-      historyIndex = -1
-      executeCommand(input)
+    try:
+      let input = stdin.readLine()
+      if input.strip().len > 0:
+        addHistory(input)
+        executeCommand(input)
+    except EOFError:
+      echo ""
+      echo "> Exited with Code::0"
+      break
+    except:
+      echo "> Error: ", getCurrentExceptionMsg()
